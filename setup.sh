@@ -1,28 +1,50 @@
 #!/bin/bash
 set -e
 
+SOURCE_REPO=${SOURCE_REPO:-"https://github.com/Canterrain/weather-display.git"}
+INSTALL_DIR=${INSTALL_DIR:-"/usr/local/weather-display"}
+
 echo "-------------------------------"
 echo "Clock Weather Display Setup"
+echo "Git Source Repository: $SOURCE_REPO"
+echo "Install into: $INSTALL_DIR"
 echo "-------------------------------"
+
+if [[ "$EUID" -ne 0 ]]; then
+  echo "Please run this script with sudo or as root."
+  exit 1
+else
+  echo "Running as ${USER}. Proceeding with installation..."
+fi
 
 # 1. Prompt for config 
 read -p "Enter your city (e.g., Cincinnati,OH,US): " city
+while [[ -z "$city" ]]; do
+  echo "City cannot be empty. Please enter a valid city."
+  read -p "Enter your city (e.g., Cincinnati,OH,US): " city
+done
+
 read -p "Choose time format (12 or 24): " timeFormat
+while [[ "$timeFormat" != "12" && "$timeFormat" != "24" ]]; do
+  echo "Invalid time format. Please enter '12' or '24'."
+  read -p "Choose time format (12 or 24): " timeFormat
+done
+
 read -p "Choose temperature units (imperial or metric): " units
+while [[ "$units" != "imperial" && "$units" != "metric" ]]; do
+  echo "Invalid units. Please enter 'imperial' or 'metric'."
+  read -p "Choose temperature units (imperial or metric): " units
+done
 
-# 2. Validate inputs
-if [[ "$timeFormat" != "12" && "$timeFormat" != "24" ]]; then
-  timeFormat="12"
-fi
-
-if [[ "$units" != "imperial" && "$units" != "metric" ]]; then
-  units="imperial"
-fi
+# 2. Install system dependencies
+echo "Installing system packages..."
+apt update
+apt install -y --no-install-recommends fontconfig git nodejs npm unzip wlr-randr xinit xserver-xorg
 
 # 3. Ensure fresh copy of weather-display
 echo "Cloning latest version of weather-display from GitHub..."
-rm -rf ~/weather-display
-git clone https://github.com/Canterrain/weather-display.git ~/weather-display
+rm -rf "${INSTALL_DIR}"
+git clone "${SOURCE_REPO}" "${INSTALL_DIR}"
 
 # 4. Resolve city -> lat/lon/timezone using Open-Meteo Geocoding API (no key)
 echo "Resolving location to latitude/longitude/timezone..."
@@ -32,16 +54,16 @@ import json, urllib.parse, urllib.request, sys, re
 raw = ${city@Q}
 
 # Parse inputs like:
-# "Loveland,OH,US"  -> name="Loveland", state="OH", country="US"
+# "Loveland,OH,US"  -> name="Loveland", state_province="OH", country="US"
 # "Aurora,IN,US"
-# If user enters something else (e.g., "Loveland Ohio"), we still try, but state/country matching may be weaker.
+# If user enters something else (e.g., "Loveland Ohio"), we still try, but state_province/country matching may be weaker.
 parts = [p.strip() for p in raw.split(",") if p.strip()]
 name = parts[0] if parts else raw.strip()
 
-state = None
+state_province = None
 country = None
 if len(parts) >= 2:
-  state = parts[1]
+  state_province = parts[1]
 if len(parts) >= 3:
   country = parts[2]
 
@@ -70,8 +92,8 @@ if not results:
 
 # Helper: normalize state input.
 # Open-Meteo returns admin1 as full state name (e.g., "Ohio"), not "OH".
-# So we map common US abbreviations to names for better matching.
-US_STATE = {
+# So we map common US/CA abbreviations to names for better matching.
+US_STATES = {
   "AL":"Alabama","AK":"Alaska","AZ":"Arizona","AR":"Arkansas","CA":"California","CO":"Colorado","CT":"Connecticut",
   "DE":"Delaware","FL":"Florida","GA":"Georgia","HI":"Hawaii","ID":"Idaho","IL":"Illinois","IN":"Indiana","IA":"Iowa",
   "KS":"Kansas","KY":"Kentucky","LA":"Louisiana","ME":"Maine","MD":"Maryland","MA":"Massachusetts","MI":"Michigan",
@@ -82,11 +104,23 @@ US_STATE = {
   "DC":"District of Columbia"
 }
 
+CA_PROVINCES = {
+  "AB":"Alberta","BC":"British Columbia","MB":"Manitoba","NB":"New Brunswick","NL":"Newfoundland and Labrador","NT":"Northwest Territories",
+  "NS":"Nova Scotia","NU":"Nunavut","ON":"Ontario","PE":"Prince Edward Island","QC":"Quebec","SK":"Saskatchewan","YT":"Yukon"
+}
+
+if country and country.upper() == "US":
+  PROVINCE_STATES = US_STATES
+elif country and country.upper() == "CA":
+  PROVINCE_STATES = CA_PROVINCES
+else:
+  PROVINCE_STATES = {}
+
 want_state_name = None
-if state:
-  s = state.strip()
-  if len(s) == 2 and s.upper() in US_STATE:
-    want_state_name = US_STATE[s.upper()]
+if state_province:
+  s = state_province.strip()
+  if len(s) == 2 and s.upper() in PROVINCE_STATES:
+    want_state_name = PROVINCE_STATES[s.upper()]
   else:
     # If they typed "Indiana" etc.
     want_state_name = s
@@ -135,7 +169,6 @@ print(json.dumps(out))
 PY
 )
 
-
 lat=$(echo "$geo_json" | python3 -c "import sys, json; s=sys.stdin.read().strip(); print(json.loads(s).get('lat','') if s else '')")
 lon=$(echo "$geo_json" | python3 -c "import sys, json; s=sys.stdin.read().strip(); print(json.loads(s).get('lon','') if s else '')")
 tz=$(echo "$geo_json" | python3 -c "import sys, json; s=sys.stdin.read().strip(); print(json.loads(s).get('timezone','auto') if s else 'auto')")
@@ -146,8 +179,8 @@ if [[ -z "$lat" || -z "$lon" ]]; then
   exit 1
 fi
 
-# 5. Create config.json
-cat <<EOF > ~/weather-display/config.json
+# 4. Create config.json
+cat <<EOF > ${INSTALL_DIR}/config.json
 {
   "location": "$city",
   "lat": $lat,
@@ -162,30 +195,25 @@ cat <<EOF > ~/weather-display/config.json
 }
 EOF
 
-# 6. Install system dependencies
-echo "Installing system packages..."
-sudo apt-get update
-sudo apt-get install -y nodejs npm git xserver-xorg xinit wlr-randr fontconfig unzip
-
-# 7. Fonts (Roboto Mono from repo folder)
+# 6. Fonts (Roboto Mono from repo folder)
 echo "Installing Roboto Mono font..."
-mkdir -p ~/.local/share/fonts/RobotoMono
-cp -f ~/weather-display/fonts/RobotoMono/*.ttf ~/.local/share/fonts/RobotoMono/ 2>/dev/null || true
+mkdir -p /usr/local/share/fonts/RobotoMono
+cp -f "${INSTALL_DIR}/fonts/RobotoMono/"*.ttf /usr/local/share/fonts/RobotoMono/ 2>/dev/null || true
 fc-cache -fv
 
-# 8. Hide mouse cursor (kiosk mode)
+# 7. Hide mouse cursor (kiosk mode)
 sudo apt-get remove -y unclutter || true
 sudo apt-get install -y unclutter-xfixes
 
-# 9. Install Node.js dependencies
-cd ~/weather-display || exit 1
+# 8. Install Node.js dependencies
+cd "${INSTALL_DIR}" || exit 1
 npm install electron@28 express@4 node-fetch@2 abort-controller
 
-# 10. Install PM2 globally
+# 9. Install PM2 globally
 sudo npm install -g pm2
 
-# 11. Create rotate_display.sh
-cat <<EOF > ~/weather-display/rotate_display.sh
+# 10. Create rotate_display.sh
+cat <<EOF > "${INSTALL_DIR}/rotate_display.sh"
 #!/bin/bash
 set -e
 export DISPLAY=:0
@@ -197,18 +225,18 @@ if [[ -z "\$DISPLAY_ID" ]]; then
 fi
 /usr/bin/wlr-randr --output "\$DISPLAY_ID" --transform 90
 EOF
-chmod +x ~/weather-display/rotate_display.sh
+chmod +x "${INSTALL_DIR}/rotate_display.sh"
 
-# 12. Setup systemd user service for rotation
-mkdir -p ~/.config/systemd/user
-cat <<EOF > ~/.config/systemd/user/rotate-display.service
+# 11. Setup systemd user service for rotation
+mkdir -p /etc/systemd/user
+cat <<EOF > /etc/systemd/user/rotate-display.service
 [Unit]
 Description=Rotate Display on Boot (Wayland)
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/home/$USER/weather-display/rotate_display.sh
+ExecStart=${INSTALL_DIR}/rotate_display.sh
 TimeoutSec=30
 Restart=on-failure
 
@@ -220,11 +248,11 @@ systemctl --user daemon-reexec
 systemctl --user daemon-reload
 systemctl --user enable rotate-display.service
 
-# 13. Start app via PM2
-chmod +x ~/weather-display/scripts/rwc.sh
-pm2 start ~/weather-display/scripts/rwc.sh --name weather-display
+# 12. Start app via PM2
+chmod +x "${INSTALL_DIR}/scripts/rwc.sh"
+pm2 start "${INSTALL_DIR}/scripts/rwc.sh" --name weather-display
 
-# 14. Enable PM2 to autostart at boot
+# 13. Enable PM2 to autostart at boot
 pm2StartupCmd=$(pm2 startup systemd -u $USER --hp /home/$USER | grep sudo || true)
 if [[ -n "$pm2StartupCmd" ]]; then
   eval "$pm2StartupCmd"
