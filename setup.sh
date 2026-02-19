@@ -202,15 +202,15 @@ cp -f "${INSTALL_DIR}/fonts/RobotoMono/"*.ttf /usr/local/share/fonts/RobotoMono/
 fc-cache -fv
 
 # 7. Hide mouse cursor (kiosk mode)
-sudo apt-get remove -y unclutter || true
-sudo apt-get install -y unclutter-xfixes
+apt remove -y unclutter || true
+apt install -y unclutter-xfixes
 
 # 8. Install Node.js dependencies
 cd "${INSTALL_DIR}" || exit 1
 npm install electron@28 express@4 node-fetch@2 abort-controller
 
 # 9. Install PM2 globally
-sudo npm install -g pm2
+npm install -g pm2
 
 # 10. Create rotate_display.sh
 cat <<EOF > "${INSTALL_DIR}/rotate_display.sh"
@@ -253,7 +253,12 @@ chmod +x "${INSTALL_DIR}/scripts/rwc.sh"
 pm2 start "${INSTALL_DIR}/scripts/rwc.sh" --name weather-display
 
 # 13. Enable PM2 to autostart at boot
-pm2StartupCmd=$(pm2 startup systemd -u $USER --hp /home/$USER | grep sudo || true)
+if [[ "$USER" == "root" ]]; then
+  pm2StartupCmd=$(pm2 startup systemd -u $USER --hp ${HOME} || true)
+else
+  pm2StartupCmd=$(pm2 startup systemd -u $USER --hp ${HOME} | grep sudo || true))  
+fi
+
 if [[ -n "$pm2StartupCmd" ]]; then
   eval "$pm2StartupCmd"
 fi
